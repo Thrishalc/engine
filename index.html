@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Platformer Physics</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+        background: #101725;
+        color: #e8f0ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      main {
+        width: min(100%, 960px);
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(1.4rem, 4vw, 2rem);
+      }
+
+      .intro {
+        margin: 0 0 16px;
+        color: #aab8d1;
+      }
+
+      .game-frame {
+        overflow: hidden;
+        border: 1px solid #35445e;
+        border-radius: 12px;
+        background: #18243a;
+        box-shadow: 0 18px 50px #0006;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 16px;
+        color: #b6c4dc;
+        font-size: 0.9rem;
+      }
+
+      #status {
+        color: #83e6ba;
+      }
+
+      button {
+        border: 1px solid #536985;
+        border-radius: 6px;
+        padding: 7px 12px;
+        background: #263650;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #344967;
+      }
+
+      button:focus-visible {
+        outline: 2px solid #83e6ba;
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Platformer Physics</h1>
+      <p class="intro">Run, jump, and explore a small side-scrolling obstacle course.</p>
+      <div class="game-frame">
+        <canvas id="game" width="960" height="540" aria-label="A 2D platform game. Use arrow keys or A and D to move, and Space, W, or Up to jump."></canvas>
+        <div class="toolbar">
+          <span>Move: ← → / A D &nbsp; Jump: Space / ↑ / W (release early for a short jump)</span>
+          <span id="status" aria-live="polite">Ready</span>
+          <button id="restart" type="button">Restart</button>
+        </div>
+      </div>
+    </main>
+    <script>
+      const canvas = document.querySelector("#game");
+      const ctx = canvas.getContext("2d");
+      const status = document.querySelector("#status");
+      const width = canvas.width;
+      const height = canvas.height;
+      const worldWidth = 3400;
+
+      const physics = {
+        gravity: 1850,
+        runAcceleration: 2400,
+        airAcceleration: 1500,
+        groundFriction: 2100,
+        airFriction: 350,
+        maxSpeed: 300,
+        jumpSpeed: 650,
+        maxFallSpeed: 1100,
+        variableJumpTime: 0.2,
+        heldJumpGravity: 0.48,
+        releaseJumpMultiplier: 0.48
+      };
+      const gravity = { x: 0, y: physics.gravity };
+
+      const platforms = [
+        { x: 0, y: 480, w: 700, h: 60 },
+        { x: 800, y: 480, w: 560, h: 60 },
+        { x: 1460, y: 480, w: 620, h: 60 },
+        { x: 2190, y: 480, w: 510, h: 60 },
+        { x: 2800, y: 480, w: 600, h: 60 },
+        { x: 265, y: 390, w: 145, h: 22 },
+        { x: 505, y: 320, w: 130, h: 22 },
+        { x: 900, y: 390, w: 160, h: 22 },
+        { x: 1150, y: 325, w: 145, h: 22 },
+        { x: 1510, y: 390, w: 145, h: 22 },
+        { x: 1740, y: 325, w: 160, h: 22 },
+        { x: 2250, y: 390, w: 160, h: 22 },
+        { x: 2485, y: 320, w: 155, h: 22 },
+        { x: 2915, y: 390, w: 175, h: 22 },
+        { x: 660, y: 438, w: 38, h: 42, obstacle: true },
+        { x: 1220, y: 438, w: 42, h: 42, obstacle: true },
+        { x: 1975, y: 438, w: 42, h: 42, obstacle: true },
+        { x: 2585, y: 438, w: 42, h: 42, obstacle: true },
+        { x: 3210, y: 438, w: 42, h: 42, obstacle: true }
+      ];
+
+      const playerStart = { x: 80, y: 420 };
+      const player = {
+        x: playerStart.x,
+        y: playerStart.y,
+        width: 28,
+        height: 42,
+        velocity: { x: 0, y: 0 },
+        acceleration: { x: 0, y: 0 },
+        grounded: false,
+        jumpTime: 0
+      };
+
+      const keys = new Set();
+      const jumpCodes = new Set(["Space", "ArrowUp", "KeyW"]);
+      let jumpPressed = false;
+      let cameraX = 0;
+      let lastTime = 0;
+      let accumulator = 0;
+      const step = 1 / 120;
+
+      function resetPlayer() {
+        player.x = playerStart.x;
+        player.y = playerStart.y;
+        player.velocity.x = 0;
+        player.velocity.y = 0;
+        player.acceleration.x = 0;
+        player.acceleration.y = 0;
+        player.grounded = false;
+        player.jumpTime = 0;
+        cameraX = 0;
+        status.textContent = "Ready";
+      }
+
+      document.querySelector("#restart").addEventListener("click", resetPlayer);
+
+      window.addEventListener("keydown", (event) => {
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "Space"].includes(event.code)) {
+          event.preventDefault();
+        }
+        if (!event.repeat && jumpCodes.has(event.code)) {
+          jumpPressed = true;
+        }
+        keys.add(event.code);
+      });
+
+      window.addEventListener("keyup", (event) => {
+        keys.delete(event.code);
+        if (jumpCodes.has(event.code) && player.velocity.y < 0) {
+          player.velocity.y *= physics.releaseJumpMultiplier;
+          player.jumpTime = physics.variableJumpTime;
+        }
+      });
+
+      window.addEventListener("blur", () => keys.clear());
+
+      function overlaps(a, b) {
+        return a.x < b.x + b.w &&
+          a.x + a.width > b.x &&
+          a.y < b.y + b.h &&
+          a.y + a.height > b.y;
+      }
+
+      function moveAndCollide(axis, amount) {
+        if (axis === "x") player.x += amount;
+        else player.y += amount;
+
+        for (const platform of platforms) {
+          if (!overlaps(player, platform)) continue;
+
+          if (axis === "x") {
+            if (amount > 0) player.x = platform.x - player.width;
+            else if (amount < 0) player.x = platform.x + platform.w;
+            player.velocity.x = 0;
+          } else {
+            if (amount > 0) {
+              player.y = platform.y - player.height;
+              player.grounded = true;
+            } else if (amount < 0) {
+              player.y = platform.y + platform.h;
+            }
+            player.velocity.y = 0;
+            player.jumpTime = 0;
+          }
+        }
+      }
+
+      function update(dt) {
+        const left = keys.has("ArrowLeft") || keys.has("KeyA");
+        const right = keys.has("ArrowRight") || keys.has("KeyD");
+        const direction = Number(right) - Number(left);
+        const groundedAtStart = player.grounded;
+
+        if (jumpPressed && player.grounded) {
+          player.velocity.y = -physics.jumpSpeed;
+          player.grounded = false;
+          player.jumpTime = 0;
+        }
+        jumpPressed = false;
+
+        if (direction !== 0) {
+          const acceleration = groundedAtStart ? physics.runAcceleration : physics.airAcceleration;
+          player.acceleration.x = direction * acceleration;
+          player.velocity.x = Math.max(
+            -physics.maxSpeed,
+            Math.min(physics.maxSpeed, player.velocity.x + player.acceleration.x * dt)
+          );
+        } else {
+          const friction = groundedAtStart ? physics.groundFriction : physics.airFriction;
+          player.acceleration.x = -Math.sign(player.velocity.x) * friction;
+          player.velocity.x += player.acceleration.x * dt;
+          if (Math.sign(player.velocity.x) !== Math.sign(player.velocity.x - player.acceleration.x * dt)) {
+            player.velocity.x = 0;
+          }
+        }
+
+        const holdingJump = [...jumpCodes].some((code) => keys.has(code));
+        const jumpIsExtending = holdingJump &&
+          player.velocity.y < 0 &&
+          player.jumpTime < physics.variableJumpTime;
+        const gravityScale = jumpIsExtending ? physics.heldJumpGravity : 1;
+        player.acceleration.y = gravity.y * gravityScale;
+        player.velocity.y = Math.min(
+          player.velocity.y + player.acceleration.y * dt,
+          physics.maxFallSpeed
+        );
+        if (player.velocity.y < 0 && jumpIsExtending) player.jumpTime += dt;
+
+        moveAndCollide("x", player.velocity.x * dt);
+        player.grounded = false;
+        moveAndCollide("y", player.velocity.y * dt);
+
+        if (player.y > height + 160) resetPlayer();
+
+        const targetCameraX = Math.max(0, Math.min(
+          worldWidth - width,
+          player.x + player.width / 2 - width * 0.42
+        ));
+        cameraX += (targetCameraX - cameraX) * Math.min(1, dt * 8);
+
+        status.textContent = player.grounded ? "Grounded" : "In the air";
+      }
+
+      function drawBackground() {
+        const sky = ctx.createLinearGradient(0, 0, 0, height);
+        sky.addColorStop(0, "#192943");
+        sky.addColorStop(1, "#314b66");
+        ctx.fillStyle = sky;
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.fillStyle = "#3e5870";
+        for (let i = 0; i < 9; i++) {
+          const x = i * 190 - (cameraX * 0.22 % 190);
+          ctx.beginPath();
+          ctx.moveTo(x - 100, 480);
+          ctx.lineTo(x + 45, 205 + (i % 3) * 35);
+          ctx.lineTo(x + 190, 480);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = "#ffffff0c";
+        for (let i = 0; i < 36; i++) {
+          const x = (i * 173 - cameraX * 0.1) % width;
+          const y = 35 + (i * 67) % 310;
+          ctx.fillRect((x + width) % width, y, 2, 2);
+        }
+      }
+
+      function draw() {
+        drawBackground();
+        ctx.save();
+        ctx.translate(-cameraX, 0);
+
+        for (const platform of platforms) {
+          if (platform.obstacle) {
+            ctx.fillStyle = "#fb7185";
+            ctx.fillRect(platform.x, platform.y, platform.w, platform.h);
+            ctx.fillStyle = "#fecdd3";
+            ctx.fillRect(platform.x + 5, platform.y + 5, platform.w - 10, 5);
+            continue;
+          }
+
+          ctx.fillStyle = "#384e43";
+          ctx.fillRect(platform.x, platform.y, platform.w, platform.h);
+          ctx.fillStyle = "#7de0a7";
+          ctx.fillRect(platform.x, platform.y, platform.w, 7);
+          ctx.fillStyle = "#ffffff12";
+          for (let x = platform.x + 12; x < platform.x + platform.w; x += 32) {
+            ctx.fillRect(x, platform.y + 17, 15, 3);
+          }
+        }
+
+        ctx.fillStyle = "#f5c96b";
+        ctx.fillRect(player.x, player.y, player.width, player.height);
+        ctx.fillStyle = "#fff1bd";
+        ctx.fillRect(player.x + 5, player.y + 6, 18, 8);
+        ctx.fillStyle = "#253247";
+        ctx.fillRect(player.x + (player.velocity.x < 0 ? 5 : 17), player.y + 8, 3, 4);
+        ctx.restore();
+
+        ctx.fillStyle = "#e8f0ff";
+        ctx.font = "600 14px system-ui, sans-serif";
+        ctx.fillText("OBSTACLE COURSE", 20, 28);
+      }
+
+      function frame(time) {
+        if (lastTime === 0) lastTime = time;
+        const elapsed = Math.min((time - lastTime) / 1000, 0.05);
+        lastTime = time;
+        accumulator += elapsed;
+
+        while (accumulator >= step) {
+          update(step);
+          accumulator -= step;
+        }
+
+        draw();
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>
